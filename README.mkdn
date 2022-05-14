@@ -8,6 +8,9 @@ target defined memory regions for your microcontroller (because we don't
 know what they are) or that the architecture is correct -- it simply moves
 data to and from UF2 files, and does exactly what you ask it to.
 
+It can also act as a very simple linker, which is useful for combining a
+bootloader and program into a single image.
+
 ## Why use this rather than `elf2uf2`
 
 I wrote this because `elf2uf2`'s overly strict validation rejected my use of
