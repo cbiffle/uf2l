@@ -8,8 +8,13 @@ target defined memory regions for your microcontroller (because we don't
 know what they are) or that the architecture is correct -- it simply moves
 data to and from UF2 files, and does exactly what you ask it to.
 
-It can also act as a very simple linker, which is useful for combining a
-bootloader and program into a single image.
+Bonus features:
+
+- Can act as a very simple linker for overlaying multiple ELF files, such as a
+  bootloader and a main program.
+- Has an `info` command that will scan UF2 files for potential issues, including
+  detecting files that will set off the RP2040 ROM bug
+  raspberrypi/pico-bootrom#19.
 
 ## Why use this rather than `elf2uf2`
 
@@ -76,9 +81,10 @@ OPTIONS:
             Number of bytes per target system block/page. The UF2 format
             effectively limits this to 476 [default: 256]
 
-    -c, --contiguous
-            Fill in gaps in memory with padding. Some UF2 implementations
-            misbehave without this
+    -e, --pad-erase-sectors <SECTOR_BYTES>
+            Pad any written data out to erase sector boundaries of this many
+            bytes, naturally aligned. This is critical for loading files into
+            the RP2040 to work around a boot ROM bug
 
     -f, --family-id <FAMILY_ID>
             Family ID identifying the type of processor this image is intended
@@ -89,7 +95,8 @@ OPTIONS:
 
         --padding <PADDING>
             Padding byte to use to pad partial blocks (if --allow-small-blocks
-            is not set) and gaps in memory (if --contiguous is set) [default: 0]
+            is not set) and unused portions of erase sectors (if
+            --pad-erase-sectors is set) [default: 0]
 
     -v, --verbose
             Enable additional output, probably more of it than you'd like

@@ -77,7 +77,7 @@ struct PackArgs {
     /// Pad any written data out to erase sector boundaries of this many bytes,
     /// naturally aligned. This is critical for loading files into the RP2040 to
     /// work around a boot ROM bug.
-    #[clap(short = 'e', long)]
+    #[clap(short = 'e', long, value_name = "SECTOR_BYTES")]
     pad_erase_sectors: Option<usize>,
 
     /// Number of bytes per target system block/page. The UF2 format effectively
