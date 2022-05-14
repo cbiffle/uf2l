@@ -1,0 +1,11 @@
+[package]
+name = "uf2l"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+goblin = "0.5"
+clap = {version = "3", features = ["derive"]}
+anyhow = "1"
+zerocopy = "0.6"
+byteorder = "1.4"
