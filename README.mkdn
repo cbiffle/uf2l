@@ -1,0 +1,111 @@
+# `uf2l` (U-F-Tool)
+
+`uf2l` is a program for dealing with UF2 format firmware images.
+
+This is similar to the `elf2uf2` tool but with less validation and more
+capabilities. In particular, this tool will not check that your ELF files
+target defined memory regions for your microcontroller (because we don't
+know what they are) or that the architecture is correct -- it simply moves
+data to and from UF2 files, and does exactly what you ask it to.
+
+## Why use this rather than `elf2uf2`
+
+I wrote this because `elf2uf2`'s overly strict validation rejected my use of
+valid RAM areas in the RP2040 -- specifically the USB SRAM. Reasons why _you_
+might use it include:
+
+- You want to process ELF files produced by objcopy from srec or ihex format,
+  which lack PHDRs and confuse `elf2uf2`.
+- You have non-`LOAD` ELF sections referencing peripherals or USB SRAM, which
+  cause `elf2uf2`'s validation to fail spuriously.
+- You are doing something weird.
+- You like a challenge.
+
+## Usage
+
+You'll need a reasonably recent Rust toolchain, ideally one managed by Rustup.
+I've tested on 1.60.
+
+`cargo run -- --help` will get top-level help (the extra `--` is there so that
+we don't get `cargo run`'s own help output). Here are snapshots of the help as
+of the time of this writing; run the actual program to get current help.
+
+Top level:
+
+```
+uf2l (pronounced U-F-Tool) manipulates UF2 firmware images
+
+USAGE:
+    uf2l [OPTIONS] <SUBCOMMAND>
+
+OPTIONS:
+    -h, --help       Print help information
+    -v, --verbose    Enable additional output, probably more of it than you'd
+                     like
+
+SUBCOMMANDS:
+    help    Print this message or the help of the given subcommand(s)
+    info    Read a UF2 file, check validity, and print information about its
+                contents
+    pack    Convert one or more ELF files into UF2 format
+```
+
+`uf2l pack --help`:
+
+```
+uf2l-pack 
+Convert one or more ELF files into UF2 format
+
+USAGE:
+    uf2l pack [OPTIONS] <INPUTS>... <OUTPUT>
+
+ARGS:
+    <INPUTS>...    Paths to one or more ELF files to combine into a UF2
+                   image. Files must not overlap
+    <OUTPUT>       Path for UF2 output
+
+OPTIONS:
+        --allow-small-blocks
+            Allow output to contain partial blocks, smaller than the block size.
+            Note that common UF2 implementations will choke on this
+
+    -b, --block-size <BLOCK_SIZE>
+            Number of bytes per target system block/page. The UF2 format
+            effectively limits this to 476 [default: 256]
+
+    -c, --contiguous
+            Fill in gaps in memory with padding. Some UF2 implementations
+            misbehave without this
+
+    -f, --family-id <FAMILY_ID>
+            Family ID identifying the type of processor this image is intended
+            for. The default value matches the RP2040 [default: 0xe48bff56]
+
+    -h, --help
+            Print help information
+
+        --padding <PADDING>
+            Padding byte to use to pad partial blocks (if --allow-small-blocks
+            is not set) and gaps in memory (if --contiguous is set) [default: 0]
+
+    -v, --verbose
+            Enable additional output, probably more of it than you'd like
+```
+
+`uf2l info --help`:
+
+```
+uf2l-info 
+Read a UF2 file, check validity, and print information about its contents
+
+USAGE:
+    uf2l info [OPTIONS] <INPUT>
+
+ARGS:
+    <INPUT>    Path to a UF2 file to analyze
+
+OPTIONS:
+    -h, --help       Print help information
+    -v, --verbose    Enable additional output, probably more of it than you'd
+                     like
+```
