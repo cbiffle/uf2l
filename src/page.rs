@@ -74,8 +74,12 @@ impl<'a> PageStore<'a> {
         Ok(())
     }
 
-    pub fn page_mut(&mut self, index: usize) -> &mut Page<'a> {
+    fn page_mut(&mut self, index: usize) -> &mut Page<'a> {
         self.pages.entry(index).or_default()
+    }
+
+    pub fn has_data_in_page(&self, address: usize) -> bool {
+        self.pages.contains_key(&(address / self.page_size))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (usize, &'_ Page<'a>)> {

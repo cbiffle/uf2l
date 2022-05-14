@@ -74,10 +74,11 @@ struct PackArgs {
     #[clap(long)]
     allow_small_blocks: bool,
 
-    /// Fill in gaps in memory with padding. Some UF2 implementations misbehave
-    /// without this.
-    #[clap(short, long)]
-    contiguous: bool,
+    /// Pad any written data out to erase sector boundaries of this many bytes,
+    /// naturally aligned. This is critical for loading files into the RP2040 to
+    /// work around a boot ROM bug.
+    #[clap(short = 'e', long)]
+    pad_erase_sectors: Option<usize>,
 
     /// Number of bytes per target system block/page. The UF2 format effectively
     /// limits this to 476.
@@ -85,7 +86,8 @@ struct PackArgs {
     block_size: usize,
 
     /// Padding byte to use to pad partial blocks (if --allow-small-blocks is
-    /// not set) and gaps in memory (if --contiguous is set).
+    /// not set) and unused portions of erase sectors (if --pad-erase-sectors is
+    /// set).
     #[clap(long, default_value = "0", parse(try_from_str = parse_u8))]
     padding: u8,
 
@@ -117,6 +119,17 @@ fn cmd_pack(
             "requested block size {} exceeds UF2 max of 476",
             args.block_size,
         );
+    }
+
+    if let Some(erase) = args.pad_erase_sectors {
+        if erase % args.block_size != 0 {
+            bail!(
+                "erase sector size {} must be an even multiple \
+                 of block size (currently {})",
+                erase,
+                args.block_size,
+            );
+        }
     }
 
     let mut pages = PageStore::with_page_size(args.block_size);
@@ -168,26 +181,25 @@ fn cmd_pack(
     // pages that are empty, but need to be filled with padding instead.
     let padvec = vec![args.padding; args.block_size];
 
-    if args.contiguous {
-        // Record the pages we need to add to make the image contiguous into a
-        // vec, which effectively acts as a worklist while we're iterating over
-        // (and thus can't modify) the pagestore.
-        let mut pad_pages = vec![];
-        // end tracks the one-past-the-end of the last page processed, so we
-        // seed it with the lowest address in the store.
-        let mut end = pages.iter().next().unwrap().0;
+    if let Some(erase) = args.pad_erase_sectors {
+        // Generate a list of the erase sectors touched by the data collected so
+        // far. This acts as a worklist for later.
+        let mut touched_sectors = BTreeSet::new();
         for (addr, _) in pages.iter() {
-            while end != addr {
-                pad_pages.push(end);
-                end += args.block_size;
-            }
-            end += args.block_size;
+            touched_sectors.insert(addr / erase);
         }
-        for addr in pad_pages {
-            // This shouldn't be able to fail, since a failure would indicate
-            // overlap with existing data, and we shouldn't be attempting it.
-            pages.add(addr, &padvec)
-                .expect("error in padding algorithm");
+        // If any page in any of those sectors is not populated, fill it with
+        // padding.
+        for sector in touched_sectors {
+            let sector_address = sector * erase;
+            for page in 0..erase / args.block_size {
+                let address = sector_address + page * args.block_size;
+
+                if !pages.has_data_in_page(address) {
+                    pages.add(address, &padvec)
+                        .expect("error in padding algorithm");
+                }
+            }
         }
     }
 
@@ -347,7 +359,7 @@ fn cmd_info(
         pages: PageStore<'a>,
         block_size: usize,
         block_count: usize,
-        blocks_seen: BTreeSet<usize>,
+        blocks: Vec<Option<Uf2Record>>,
     }
 
     let mut families: BTreeMap<u32, Stream<'_>> = BTreeMap::new();
@@ -397,7 +409,7 @@ fn cmd_info(
             .or_insert_with(|| Stream {
                 block_size: record.length.get() as usize,
                 pages: PageStore::with_page_size(record.length.get() as usize),
-                blocks_seen: BTreeSet::new(),
+                blocks: vec![None; record.total_blocks.get() as usize],
                 block_count: record.total_blocks.get() as usize,
             });
 
@@ -422,13 +434,14 @@ fn cmd_info(
             );
         }
 
-        if stream.blocks_seen.insert(record.block_no.get() as usize) == false {
+        if stream.blocks[record.block_no.get() as usize].is_some() {
             println!(
                 "ERROR: family {:#010x} block #{} appears more than once",
                 record.family_id.get(),
                 record.block_no.get(),
             );
         }
+        stream.blocks[record.block_no.get() as usize] = Some(record.clone());
 
         let data = &record.data[..record.length.get() as usize];
         let address = record.address.get();
@@ -446,11 +459,55 @@ fn cmd_info(
     );
 
     for (family_id, stream) in families {
+        let blocks_present = stream.blocks.iter().filter(|r| r.is_some()).count();
         println!();
         println!("family ID {:#08x}:", family_id);
         println!("- expected {} blocks, got {}",
             stream.block_count,
-            stream.blocks_seen.len());
+            blocks_present,
+        );
+
+        if blocks_present != stream.block_count {
+            println!("- not doing further checks because of missing blocks");
+            continue;
+        }
+
+        if family_id == format::RP2040_FAMILY_ID {
+            // Check mitigation for ROM bug. The ROM uses block number to index
+            // into a bitset of erased flash pages, instead of transfer address,
+            // with the net effect that...
+            // - It will unconditionally erase one flash sector per group of 16
+            //   UF2 blocks, using the transfer address of the first one seen to
+            //   choose the sector.
+            // - It will happily write flash pages without erasing them if the
+            //   destination erase sector changes within a group of 16 UF2
+            //   blocks.
+            //
+            // Because we can't control the order the blocks are presented to
+            // the bootloader by the operating system, the safest mitigation is
+            // to require that each group of 16 consecutive (by block number)
+            // UF2 blocks targets the _same_ erase sector.
+            let mut mitigation_ok = true;
+            for sector in stream.blocks.chunks(16) {
+                let sector0 = sector[0].as_ref().unwrap();
+                let target_sector = sector0.address.get() / 4096;
+
+                let same = sector.iter().all(|r| {
+                    r.as_ref().unwrap().address.get() / 4096 == target_sector
+                });
+
+                if !same {
+                    println!("- ERROR: this file will not flash correctly!");
+                    println!("  see: https://github.com/raspberrypi/pico-bootrom/issues/19");
+                    mitigation_ok = false;
+                    break;
+                }
+            }
+
+            if mitigation_ok {
+                println!("- file will not trigger raspberrypi/pico-bootrom#19 bug");
+            }
+        }
 
         if global.verbose {
             println!("- {:<10}  LEN", "ADDR");

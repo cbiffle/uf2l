@@ -7,7 +7,7 @@
 use zerocopy::{AsBytes, FromBytes, U32};
 use byteorder::LittleEndian;
 
-#[derive(AsBytes, FromBytes)]
+#[derive(Clone, AsBytes, FromBytes)]
 #[repr(C)]
 pub struct Uf2Record {
     pub magic: [U32<LittleEndian>; 2],
@@ -57,3 +57,4 @@ impl Uf2Record {
     }
 }
 
+pub const RP2040_FAMILY_ID: u32 = 0xe48bff56;
