@@ -2,6 +2,7 @@
 name = "uf2l"
 version = "0.1.0"
 edition = "2021"
+license = "MPL-2.0"
 
 [dependencies]
 goblin = "0.5"
