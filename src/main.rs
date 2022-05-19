@@ -48,6 +48,15 @@ struct GlobalFlags {
 enum Cmd {
     /// Convert one or more ELF files into UF2 format.
     Pack(PackArgs),
+    /// Converts ELF files into UF2 like `pack`, but instead of writing the
+    /// result to a normal file, scans for attached bootloaders emulating USB
+    /// mass storage devices and copies the firmware directly to one.
+    ///
+    /// Any mounted drive that contains an `INFO_UF2.TXT` file at its root will
+    /// be considered as a potential attached bootloader. Arguments to this
+    /// command allow filtering based on the contents of that file.
+    #[cfg(feature = "flash-cmd")]
+    Flash(FlashArgs),
     /// Read a UF2 file, check validity, and print information about its
     /// contents.
     Info(InfoArgs),
@@ -61,14 +70,17 @@ fn main() -> Result<()> {
     match &args.command {
         Cmd::Pack(subargs) => cmd_pack(&args.global, subargs),
         Cmd::Info(subargs) => cmd_info(&args.global, subargs),
+
+        #[cfg(feature = "flash-cmd")]
+        Cmd::Flash(subargs) => cmd_flash(&args.global, subargs),
     }
 }
 
 ///////////////////////////////////////////////////////////////////////
-// pack
+// pack and flash
 
 #[derive(Parser)]
-struct PackArgs {
+struct PackAndFlashArgs {
     /// Allow output to contain partial blocks, smaller than the block size.
     /// Note that common UF2 implementations will choke on this.
     #[clap(long)]
@@ -100,6 +112,12 @@ struct PackArgs {
         default_value = "0xe48bff56",
     )]
     family_id: u32,
+}
+
+#[derive(Parser)]
+struct PackArgs {
+    #[clap(flatten)]
+    common: PackAndFlashArgs,
 
     /// Paths to one or more ELF files to combine into a UF2 image. Files must
     /// not overlap.
@@ -111,8 +129,153 @@ struct PackArgs {
 }
 
 fn cmd_pack(
-    _global: &GlobalFlags,
+    global: &GlobalFlags,
     args: &PackArgs,
+) -> Result<()> {
+    do_common_pack(
+        global,
+        &args.common,
+        &args.inputs,
+        &args.output,
+    )
+}
+
+#[cfg(feature = "flash-cmd")]
+#[derive(Parser)]
+struct FlashArgs {
+    #[clap(flatten)]
+    common: PackAndFlashArgs,
+
+    #[clap(flatten)]
+    filter: BootloaderFilter,
+
+    /// Normally, the tool will fail if multiple attached bootloaders match, to
+    /// avoid doing something questionable. This flag overrides that behavior
+    /// and arbitrarily selects one.
+    #[clap(long)]
+    feeling_lucky: bool,
+
+    /// Paths to one or more ELF files to combine into a UF2 image. Files must
+    /// not overlap.
+    #[clap(required = true)]
+    inputs: Vec<PathBuf>,
+}
+
+#[cfg(feature = "flash-cmd")]
+#[derive(Parser)]
+struct BootloaderFilter {
+    /// CPU type to search for when enumerating UF2 bootloaders. This will be
+    /// used to match the first component of the `Board-Id` line of an
+    /// `INFO_UF2.TXT` file. If omitted, any CPU type will be accepted.
+    #[clap(long)]
+    cpu: Option<String>,
+    /// Board type to search for when enumerating UF2 bootloaders. This will be
+    /// used to match the second component of the `Board-Id` line of an
+    /// `INFO_UF2.TXT` file. If omitted, any board will be accepted.
+    #[clap(long)]
+    board: Option<String>,
+    /// Board revision to search for when enumerating UF2 bootloaders. This will
+    /// be used to match the third component of the `Board-Id` line of an
+    /// `INFO_UF2.TXT` file. If omitted, any board revision will be accepted.
+    #[clap(long)]
+    revision: Option<String>,
+}
+
+#[cfg(feature = "flash-cmd")]
+fn cmd_flash(
+    global: &GlobalFlags,
+    args: &FlashArgs,
+) -> Result<()> {
+    use sysinfo::{DiskExt, SystemExt};
+
+    let sys = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::new().with_disks_list()
+    );
+
+    let mut matches = vec![];
+    for disk in sys.disks() {
+        let path = disk.mount_point();
+        match check_bootloader(&path, &args.filter) {
+            Ok(true) => matches.push(path),
+            Ok(false) => (),
+            Err(e) => {
+                eprintln!("warning: {:?}", e);
+                continue;
+            }
+        }
+    }
+
+    let dest = match matches.len() {
+        0 => {
+            bail!("no matching mounted devices were found");
+        }
+        1 => matches.into_iter().next().unwrap(),
+        n if args.feeling_lucky => {
+            eprintln!("note: {n} matching devices found, picking one");
+            matches.into_iter().next().unwrap()
+        }
+        n => {
+            bail!("couldn't find unique matching device ({n} found)");
+        }
+    };
+
+    let output = dest.join("FIRMWARE.UF2");
+    do_common_pack(
+        global,
+        &args.common,
+        &args.inputs,
+        &output,
+    )
+}
+
+#[cfg(feature = "flash-cmd")]
+fn check_bootloader(
+    path: &std::path::Path,
+    filter: &BootloaderFilter,
+) -> Result<bool> {
+    let info = path.join("INFO_UF2.TXT");
+    if !info.is_file() {
+        return Ok(false);
+    }
+
+    let contents = std::fs::read_to_string(&info)
+        .with_context(|| format!("reading {}", info.display()))?;
+
+    let board_id_line = contents.lines()
+        .find(|line| line.starts_with("Board-ID: "))
+        .ok_or_else(|| anyhow!("INFO_UF2.TXT does not contain Board-ID"))?;
+    // Strip off the label...
+    let board_id_line = &board_id_line["Board-ID: ".len()..];
+    // ...and split it up.
+    let mut components = board_id_line.split('-');
+    let cpu_type = components.next();
+    let board_type = components.next();
+    let board_rev = components.next();
+
+    if let Some(cpu_goal) = &filter.cpu {
+        if cpu_type != Some(cpu_goal) {
+            return Ok(false);
+        }
+    }
+    if let Some(board_goal) = &filter.board {
+        if board_type != Some(board_goal) {
+            return Ok(false);
+        }
+    }
+    if let Some(rev_goal) = &filter.revision {
+        if board_rev != Some(rev_goal) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn do_common_pack(
+    _global: &GlobalFlags,
+    args: &PackAndFlashArgs,
+    inputs: &[PathBuf],
+    output: &PathBuf,
 ) -> Result<()> {
     if args.block_size > 476 {
         bail!(
@@ -136,7 +299,7 @@ fn cmd_pack(
 
     // Load all the files into a vector so that we can store references into
     // their contents.
-    let images = args.inputs.iter()
+    let images = inputs.iter()
         .map(|input| Ok((
             input,
             std::fs::read(input)
@@ -212,17 +375,17 @@ fn cmd_pack(
     //   written in index order one at a time.
     // - We're writing each block exactly once in order.
 
-    let mut out = std::fs::File::create(&args.output)
+    let mut out = std::fs::File::create(output)
         .with_context(|| format!(
             "can't create output file {}",
-            args.output.display(),
+            output.display(),
         ))?;
 
     let block_count = pages.page_count() as u32;
 
     println!(
         "{}image is {} blocks",
-        if args.inputs.len() > 1 { "combined " } else { "" },
+        if inputs.len() > 1 { "combined " } else { "" },
         block_count,
     );
 

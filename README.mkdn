@@ -15,6 +15,12 @@ Bonus features:
 - Has an `info` command that will scan UF2 files for potential issues, including
   detecting files that will set off the RP2040 ROM bug
   raspberrypi/pico-bootrom#19.
+- Has a `flash` command that will identify attached boards waiting for UF2
+  firmware files, optionally filter them (in case you have more than one
+  attached), and transfer the packed UF2 output directly. (This command is
+  available when the default `flash-cmd` feature is set; you may wish to disable
+  it if you're on an operating system that the `sysinfo` crate does not
+  support.)
 
 ## Why use this rather than `elf2uf2`
 
@@ -26,6 +32,7 @@ might use it include:
   which lack PHDRs and confuse `elf2uf2`.
 - You have non-`LOAD` ELF sections referencing peripherals or USB SRAM, which
   cause `elf2uf2`'s validation to fail spuriously.
+- You are working with microcontrollers other than the RP2040.
 - You are doing something weird.
 - You like a challenge.
 
@@ -52,6 +59,10 @@ OPTIONS:
                      like
 
 SUBCOMMANDS:
+    flash    Converts ELF files into UF2 like `pack`, but instead of writing
+                 the result to a normal file, scans for attached bootloaders
+                 emulating USB mass storage devices and copies the firmware
+                 directly to one
     help    Print this message or the help of the given subcommand(s)
     info    Read a UF2 file, check validity, and print information about its
                 contents
@@ -97,6 +108,76 @@ OPTIONS:
             Padding byte to use to pad partial blocks (if --allow-small-blocks
             is not set) and unused portions of erase sectors (if
             --pad-erase-sectors is set) [default: 0]
+
+    -v, --verbose
+            Enable additional output, probably more of it than you'd like
+```
+
+`uf2l flash --help`:
+
+```
+uf2l-flash 
+Converts ELF files into UF2 like `pack`, but instead of writing the result to a
+normal file, scans for attached bootloaders emulating USB mass storage devices
+and copies the firmware directly to one.
+
+Any mounted drive that contains an `INFO_UF2.TXT` file at its root will be
+considered as a potential attached bootloader. Arguments to this command allow
+filtering based on the contents of that file.
+
+USAGE:
+    uf2l flash [OPTIONS] <INPUTS>...
+
+ARGS:
+    <INPUTS>...    Paths to one or more ELF files to combine into a UF2
+                   image. Files must not overlap
+
+OPTIONS:
+        --allow-small-blocks
+            Allow output to contain partial blocks, smaller than the block size.
+            Note that common UF2 implementations will choke on this
+
+    -b, --block-size <BLOCK_SIZE>
+            Number of bytes per target system block/page. The UF2 format
+            effectively limits this to 476 [default: 256]
+
+        --board <BOARD>
+            Board type to search for when enumerating UF2 bootloaders. This will
+            be used to match the second component of the `Board-Id` line of an
+            `INFO_UF2.TXT` file. If omitted, any board will be accepted
+
+        --cpu <CPU>
+            CPU type to search for when enumerating UF2 bootloaders. This will
+            be used to match the first component of the `Board-Id` line of an
+            `INFO_UF2.TXT` file. If omitted, any CPU type will be accepted
+
+    -e, --pad-erase-sectors <SECTOR_BYTES>
+            Pad any written data out to erase sector boundaries of this many
+            bytes, naturally aligned. This is critical for loading files into
+            the RP2040 to work around a boot ROM bug
+
+    -f, --family-id <FAMILY_ID>
+            Family ID identifying the type of processor this image is intended
+            for. The default value matches the RP2040 [default: 0xe48bff56]
+
+        --feeling-lucky
+            Normally, the tool will fail if multiple attached bootloaders match,
+            to avoid doing something questionable. This flag overrides that
+            behavior and arbitrarily selects one
+
+    -h, --help
+            Print help information
+
+        --padding <PADDING>
+            Padding byte to use to pad partial blocks (if --allow-small-blocks
+            is not set) and unused portions of erase sectors (if
+            --pad-erase-sectors is set) [default: 0]
+
+        --revision <REVISION>
+            Board revision to search for when enumerating UF2 bootloaders. This
+            will be used to match the third component of the `Board-Id` line of
+            an `INFO_UF2.TXT` file. If omitted, any board revision will be
+            accepted
 
     -v, --verbose
             Enable additional output, probably more of it than you'd like
