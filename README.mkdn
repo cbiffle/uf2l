@@ -48,7 +48,13 @@ uf2l flash --family-id SAMD51 --board WioTerminal program.elf
 ```
 
 `uf2l flash` can also be defined as the `runner` in your `.cargo/config` to
-cause `cargo run` to work.
+cause `cargo run` to work. You just need to set the family ID (here it's the
+ATSAMD51):
+
+```toml
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "uf2l flash -f SAMD51"
+```
 
 ## More detailed usage instructions
 
