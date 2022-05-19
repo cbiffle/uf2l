@@ -48,6 +48,9 @@ struct GlobalFlags {
 enum Cmd {
     /// Convert one or more ELF files into UF2 format.
     Pack(PackArgs),
+    /// Read a UF2 file, check validity, and print information about its
+    /// contents.
+    Info(InfoArgs),
     /// Converts ELF files into UF2 like `pack`, but instead of writing the
     /// result to a normal file, scans for attached bootloaders emulating USB
     /// mass storage devices and copies the firmware directly to one.
@@ -55,11 +58,12 @@ enum Cmd {
     /// Any mounted drive that contains an `INFO_UF2.TXT` file at its root will
     /// be considered as a potential attached bootloader. Arguments to this
     /// command allow filtering based on the contents of that file.
-    #[cfg(feature = "flash-cmd")]
+    #[cfg(feature = "sysinfo")]
     Flash(FlashArgs),
-    /// Read a UF2 file, check validity, and print information about its
-    /// contents.
-    Info(InfoArgs),
+    /// Scans for attached bootloaders like `flash`, but lists them instead of
+    /// attempting to upload to one.
+    #[cfg(feature = "sysinfo")]
+    Scan(ScanArgs),
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -71,8 +75,10 @@ fn main() -> Result<()> {
         Cmd::Pack(subargs) => cmd_pack(&args.global, subargs),
         Cmd::Info(subargs) => cmd_info(&args.global, subargs),
 
-        #[cfg(feature = "flash-cmd")]
+        #[cfg(feature = "sysinfo")]
         Cmd::Flash(subargs) => cmd_flash(&args.global, subargs),
+        #[cfg(feature = "sysinfo")]
+        Cmd::Scan(subargs) => cmd_scan(&args.global, subargs),
     }
 }
 
@@ -142,7 +148,7 @@ fn cmd_pack(
     )
 }
 
-#[cfg(feature = "flash-cmd")]
+#[cfg(feature = "sysinfo")]
 #[derive(Parser)]
 struct FlashArgs {
     #[clap(flatten)]
@@ -163,27 +169,7 @@ struct FlashArgs {
     inputs: Vec<PathBuf>,
 }
 
-#[cfg(feature = "flash-cmd")]
-#[derive(Parser)]
-struct BootloaderFilter {
-    /// CPU type to search for when enumerating UF2 bootloaders. This will be
-    /// used to match the first component of the `Board-Id` line of an
-    /// `INFO_UF2.TXT` file. If omitted, any CPU type will be accepted.
-    #[clap(long)]
-    cpu: Option<String>,
-    /// Board type to search for when enumerating UF2 bootloaders. This will be
-    /// used to match the second component of the `Board-Id` line of an
-    /// `INFO_UF2.TXT` file. If omitted, any board will be accepted.
-    #[clap(long)]
-    board: Option<String>,
-    /// Board revision to search for when enumerating UF2 bootloaders. This will
-    /// be used to match the third component of the `Board-Id` line of an
-    /// `INFO_UF2.TXT` file. If omitted, any board revision will be accepted.
-    #[clap(long)]
-    revision: Option<String>,
-}
-
-#[cfg(feature = "flash-cmd")]
+#[cfg(feature = "sysinfo")]
 fn cmd_flash(
     global: &GlobalFlags,
     args: &FlashArgs,
@@ -228,49 +214,6 @@ fn cmd_flash(
         &args.inputs,
         &output,
     )
-}
-
-#[cfg(feature = "flash-cmd")]
-fn check_bootloader(
-    path: &std::path::Path,
-    filter: &BootloaderFilter,
-) -> Result<bool> {
-    let info = path.join("INFO_UF2.TXT");
-    if !info.is_file() {
-        return Ok(false);
-    }
-
-    let contents = std::fs::read_to_string(&info)
-        .with_context(|| format!("reading {}", info.display()))?;
-
-    let board_id_line = contents.lines()
-        .find(|line| line.starts_with("Board-ID: "))
-        .ok_or_else(|| anyhow!("INFO_UF2.TXT does not contain Board-ID"))?;
-    // Strip off the label...
-    let board_id_line = &board_id_line["Board-ID: ".len()..];
-    // ...and split it up.
-    let mut components = board_id_line.split('-');
-    let cpu_type = components.next();
-    let board_type = components.next();
-    let board_rev = components.next();
-
-    if let Some(cpu_goal) = &filter.cpu {
-        if cpu_type != Some(cpu_goal) {
-            return Ok(false);
-        }
-    }
-    if let Some(board_goal) = &filter.board {
-        if board_type != Some(board_goal) {
-            return Ok(false);
-        }
-    }
-    if let Some(rev_goal) = &filter.revision {
-        if board_rev != Some(rev_goal) {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
 }
 
 fn do_common_pack(
@@ -684,6 +627,164 @@ fn cmd_info(
 
     Ok(())
 }
+
+///////////////////////////////////////////////////////////////////////
+// scan
+
+#[cfg(feature = "sysinfo")]
+#[derive(Parser)]
+struct ScanArgs {
+    #[clap(flatten)]
+    filter: BootloaderFilter,
+}
+
+#[cfg(feature = "sysinfo")]
+fn cmd_scan(
+    global: &GlobalFlags,
+    args: &ScanArgs,
+) -> Result<()> {
+    use sysinfo::{DiskExt, SystemExt};
+
+    let sys = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::new().with_disks_list()
+    );
+
+    let mut matches = vec![];
+    for disk in sys.disks() {
+        let path = disk.mount_point();
+        match read_bootloader_info(&path) {
+            Ok(Some(bid)) => {
+                let included = args.filter.matches(&bid);
+                matches.push((bid, included));
+            }
+            Ok(None) => (),
+            Err(e) => {
+                eprintln!("warning: {:?}", e);
+                continue;
+            }
+        }
+    }
+
+    if matches.is_empty() {
+        println!("no devices found.");
+        return Ok(())
+    }
+
+    println!("devices found: {}", matches.len());
+
+    println!("{:16} {:16} {:8}{}",
+        "CPU", "BOARD", "REV", if args.filter.any_set() { " MATCHES?" } else { "" });
+    for (bid, included) in matches {
+        println!("{:16} {:16} {:8}{}",
+            bid.cpu.as_ref().map(String::as_str).unwrap_or("-"),
+            bid.board.as_ref().map(String::as_str).unwrap_or("-"),
+            bid.rev.as_ref().map(String::as_str).unwrap_or("-"),
+            if args.filter.any_set() {
+                if included {
+                    " YES"
+                } else {
+                    " no"
+                }
+            } else {
+                ""
+            });
+    }
+
+    Ok(())
+}
+
+///////////////////////////////////////////////////////////////////////
+// Bootloader scan and INFO_UF2.TXT support.
+
+#[cfg(feature = "sysinfo")]
+#[derive(Parser)]
+struct BootloaderFilter {
+    /// CPU type to search for when enumerating UF2 bootloaders. This will be
+    /// used to match the first component of the `Board-Id` line of an
+    /// `INFO_UF2.TXT` file. If omitted, any CPU type will be accepted.
+    #[clap(long)]
+    cpu: Option<String>,
+    /// Board type to search for when enumerating UF2 bootloaders. This will be
+    /// used to match the second component of the `Board-Id` line of an
+    /// `INFO_UF2.TXT` file. If omitted, any board will be accepted.
+    #[clap(long)]
+    board: Option<String>,
+    /// Board revision to search for when enumerating UF2 bootloaders. This will
+    /// be used to match the third component of the `Board-Id` line of an
+    /// `INFO_UF2.TXT` file. If omitted, any board revision will be accepted.
+    #[clap(long)]
+    revision: Option<String>,
+}
+
+impl BootloaderFilter {
+    pub fn any_set(&self) -> bool {
+        self.cpu.is_some() || self.board.is_some() || self.revision.is_some()
+    }
+
+    pub fn matches(&self, bid: &BoardId) -> bool {
+        if let Some(cpu_goal) = &self.cpu {
+            if bid.cpu.as_ref() != Some(cpu_goal) {
+                return false;
+            }
+        }
+        if let Some(board_goal) = &self.board {
+            if bid.board.as_ref() != Some(board_goal) {
+                return false;
+            }
+        }
+        if let Some(rev_goal) = &self.revision {
+            if bid.rev.as_ref() != Some(rev_goal) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[cfg(feature = "sysinfo")]
+fn read_bootloader_info(
+    path: &std::path::Path,
+) -> Result<Option<BoardId>> {
+    let info = path.join("INFO_UF2.TXT");
+    if !info.is_file() {
+        return Ok(None);
+    }
+
+    let contents = std::fs::read_to_string(&info)
+        .with_context(|| format!("reading {}", info.display()))?;
+
+    let board_id_line = contents.lines()
+        .find(|line| line.starts_with("Board-ID: "))
+        .ok_or_else(|| anyhow!("INFO_UF2.TXT does not contain Board-ID"))?;
+    // Strip off the label...
+    let board_id_line = &board_id_line["Board-ID: ".len()..];
+    // ...and split it up.
+    let mut components = board_id_line.split('-');
+    let cpu = components.next().map(String::from);
+    let board = components.next().map(String::from);
+    let rev = components.next().map(String::from);
+
+    Ok(Some(BoardId { cpu, board, rev }))
+}
+
+struct BoardId {
+    cpu: Option<String>,
+    board: Option<String>,
+    rev: Option<String>,
+}
+
+#[cfg(feature = "sysinfo")]
+fn check_bootloader(
+    path: &std::path::Path,
+    filter: &BootloaderFilter,
+) -> Result<bool> {
+    if let Some(bid) = read_bootloader_info(path)? {
+        Ok(filter.matches(&bid))
+    } else {
+        Ok(false)
+    }
+}
+
 
 ///////////////////////////////////////////////////////////////////////
 // Clap helper functions. Out of the box, Clap does not appear to be able to

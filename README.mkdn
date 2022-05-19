@@ -19,11 +19,17 @@ Bonus features:
 - Has a `flash` command that will identify attached boards waiting for UF2
   firmware files, optionally filter them (in case you have more than one
   attached), and transfer the packed UF2 output directly. (This command is
-  available when the default `flash-cmd` feature is set; you may wish to disable
+  available when the default `sysinfo` feature is set; you may wish to disable
   it if you're on an operating system that the `sysinfo` crate does not
   support.)
 
 ## Simple examples
+
+Listing available boards:
+
+```
+uf2l scan
+```
 
 Flashing a program to a Raspberry Pi Pico, which happens to be the default
 target if no flags are specified, is simple if the program includes the stage 2
@@ -91,6 +97,8 @@ SUBCOMMANDS:
     info    Read a UF2 file, check validity, and print information about its
                 contents
     pack    Convert one or more ELF files into UF2 format
+    scan     Scans for attached bootloaders like `flash`, but lists them
+                 instead of attempting to upload to one
 ```
 
 `uf2l pack --help`:
@@ -227,6 +235,40 @@ OPTIONS:
     -h, --help       Print help information
     -v, --verbose    Enable additional output, probably more of it than you'd
                      like
+```
+
+`uf2l scan --help`:
+
+```
+uf2l-scan 
+Scans for attached bootloaders like `flash`, but lists them instead of
+attempting to upload to one
+
+USAGE:
+    uf2l scan [OPTIONS]
+
+OPTIONS:
+        --board <BOARD>
+            Board type to search for when enumerating UF2 bootloaders. This will
+            be used to match the second component of the `Board-Id` line of an
+            `INFO_UF2.TXT` file. If omitted, any board will be accepted
+
+        --cpu <CPU>
+            CPU type to search for when enumerating UF2 bootloaders. This will
+            be used to match the first component of the `Board-Id` line of an
+            `INFO_UF2.TXT` file. If omitted, any CPU type will be accepted
+
+    -h, --help
+            Print help information
+
+        --revision <REVISION>
+            Board revision to search for when enumerating UF2 bootloaders. This
+            will be used to match the third component of the `Board-Id` line of
+            an `INFO_UF2.TXT` file. If omitted, any board revision will be
+            accepted
+
+    -v, --verbose
+            Enable additional output, probably more of it than you'd like
 ```
 
 [uf2-families]: https://github.com/microsoft/uf2/blob/master/utils/uf2families.json
