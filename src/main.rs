@@ -103,13 +103,15 @@ struct PackAndFlashArgs {
     #[clap(long, default_value = "0", parse(try_from_str = parse_u8))]
     padding: u8,
 
-    /// Family ID identifying the type of processor this image is intended for.
-    /// The default value matches the RP2040.
+    /// Family ID identifying the type of processor this image is intended for,
+    /// given either as a decimal number, a hex number prefixed with `0x`, or
+    /// the name of the family from the UF2 spec. Pass `help` to see a list of
+    /// known names.
     #[clap(
         long,
         short,
-        parse(try_from_str = parse_u32),
-        default_value = "0xe48bff56",
+        parse(try_from_str = parse_family),
+        default_value = "RP2040",
     )]
     family_id: u32,
 }
@@ -710,3 +712,33 @@ fn parse_with_prefix<T>(
             .context("expected decimal number or 0x/0b prefix")
     }
 }
+
+fn parse_family(s: &str) -> Result<u32> {
+    // Try parsing as an integer first.
+    match parse_u32(s) {
+        Ok(f) => Ok(f),
+        Err(_e) => {
+            // Try looking it up. Special-case the "help" family first.
+            if s == "help" {
+                eprintln!("Defined UF2 families:");
+                eprintln!("{:10} {:16} {}", "HEX", "NAME", "DESCRIPTION");
+                for (id, name, desc) in FAMILIES {
+                    eprintln!("{:#10x} {:16} {}", id, name, desc);
+                }
+                bail!("choose a hex value or name from the list above.");
+            }
+
+            // The build system sorts the families by name, so we can use binary
+            // search to quickly and easily find any match:
+            match FAMILIES.binary_search_by_key(&s, |(_, name, _)| name) {
+                Ok(i) => Ok(FAMILIES[i].0),
+                Err(_) => {
+                    bail!("can't parse {} as family name or number \
+                        (use --family-id=help for list)", s);
+                }
+            }
+        }
+    }
+}
+
+include!(concat!(env!("OUT_DIR"), "/uf2families.rs"));

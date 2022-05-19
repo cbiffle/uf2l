@@ -15,6 +15,7 @@ Bonus features:
 - Has an `info` command that will scan UF2 files for potential issues, including
   detecting files that will set off the RP2040 ROM bug
   raspberrypi/pico-bootrom#19.
+- Can lookup family IDs using the names used [in the UF2 repo][uf2-families]
 - Has a `flash` command that will identify attached boards waiting for UF2
   firmware files, optionally filter them (in case you have more than one
   attached), and transfer the packed UF2 output directly. (This command is
@@ -22,28 +23,45 @@ Bonus features:
   it if you're on an operating system that the `sysinfo` crate does not
   support.)
 
-## Why use this rather than `elf2uf2`
+## Simple examples
 
-I wrote this because `elf2uf2`'s overly strict validation rejected my use of
-valid RAM areas in the RP2040 -- specifically the USB SRAM. Reasons why _you_
-might use it include:
+Flashing a program to a Raspberry Pi Pico, which happens to be the default
+target if no flags are specified, is simple if the program includes the stage 2
+bootloader itself:
 
-- You want to process ELF files produced by objcopy from srec or ihex format,
-  which lack PHDRs and confuse `elf2uf2`.
-- You have non-`LOAD` ELF sections referencing peripherals or USB SRAM, which
-  cause `elf2uf2`'s validation to fail spuriously.
-- You are working with microcontrollers other than the RP2040.
-- You are doing something weird.
-- You like a challenge.
+```
+uf2l flash program.elf
+```
 
-## Usage
+If you have a _separate_ bootloader, such as [rp2040-rustboot], you can include
+it:
+
+```
+uf2l flash rustboot-w25q080.elf program.elf
+```
+
+Flashing a program to the Seeed Wio Terminal board (and not other boards you
+might have plugged in):
+
+```
+uf2l flash --family-id SAMD51 --board WioTerminal program.elf
+```
+
+`uf2l flash` can also be defined as the `runner` in your `.cargo/config` to
+cause `cargo run` to work.
+
+## More detailed usage instructions
+
+To install:
+
+1. Clone this repo (tool is not yet on crates.io)
+2. Run: `cargo install --path . --locked`
 
 You'll need a reasonably recent Rust toolchain, ideally one managed by Rustup.
 I've tested on 1.60.
 
-`cargo run -- --help` will get top-level help (the extra `--` is there so that
-we don't get `cargo run`'s own help output). Here are snapshots of the help as
-of the time of this writing; run the actual program to get current help.
+`uf2l --help` will get top-level help. Here are snapshots of the help as of the
+time of this writing; run the actual program to get current help.
 
 Top level:
 
@@ -99,7 +117,9 @@ OPTIONS:
 
     -f, --family-id <FAMILY_ID>
             Family ID identifying the type of processor this image is intended
-            for. The default value matches the RP2040 [default: 0xe48bff56]
+            for, given either as a decimal number, a hex number prefixed with
+            `0x`, or the name of the family from the UF2 spec. Pass `help` to
+            see a list of known names [default: RP2040]
 
     -h, --help
             Print help information
@@ -158,7 +178,9 @@ OPTIONS:
 
     -f, --family-id <FAMILY_ID>
             Family ID identifying the type of processor this image is intended
-            for. The default value matches the RP2040 [default: 0xe48bff56]
+            for, given either as a decimal number, a hex number prefixed with
+            `0x`, or the name of the family from the UF2 spec. Pass `help` to
+            see a list of known names [default: RP2040]
 
         --feeling-lucky
             Normally, the tool will fail if multiple attached bootloaders match,
@@ -200,3 +222,6 @@ OPTIONS:
     -v, --verbose    Enable additional output, probably more of it than you'd
                      like
 ```
+
+[uf2-families]: https://github.com/microsoft/uf2/blob/master/utils/uf2families.json
+[rp2040-rustboot]: https://github.com/cbiffle/rp2040-rustboot/
